@@ -1,6 +1,8 @@
 name: Keep Server Alive
 
 on:
+  repository_dispatch:
+    types: [keepalive]
   schedule:
     - cron: '*/2 * * * *'
   workflow_dispatch:
