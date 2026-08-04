@@ -110,6 +110,9 @@ def do_post(session, form_url, csrf_token, extend_till, captcha_text=None):
     })
     return session.post(form_url, data=data, allow_redirects=False)
 
+def page_has_captcha(html):
+    return re.search(r'id="extendfreeplanform-captcha-image"[^>]*src="([^"]+)"', html) is not None
+
 def keep_alive():
     session = requests.Session()
     session.cookies.set("_identity-frontend", SESSION_COOKIE, domain="lemehost.com")
@@ -150,24 +153,34 @@ def keep_alive():
         till_match = re.search(r'name="ExtendFreePlanForm\[extendTill\]"[^>]*value="(\d+)"', resp.text)
         extend_till = till_match.group(1) if till_match else "1785315284"
 
-        # Try without captcha first
-        log("Trying without captcha...")
-        r = do_post(session, form_url, csrf_token, extend_till, None)
-        log(f"POST (no captcha): {r.status_code}")
-        after, a_str = get_timer(r.text)
-        if after:
-            log(f"Timer now: {a_str} ({after} min)")
-            if after > (before or 0):
-                log("SUCCESS! Timer increased without captcha!")
-                return True
-        if r.status_code == 302:
-            log("SUCCESS (302)!")
-            return True
+        has_captcha = page_has_captcha(resp.text)
 
-        # Solve captcha and try
+        if not has_captcha:
+            # No captcha on this server right now: POST directly.
+            log("No captcha on page, posting directly...")
+            r = do_post(session, form_url, csrf_token, extend_till, None)
+            log(f"POST (no captcha): {r.status_code}")
+            after, a_str = get_timer(r.text)
+            if after:
+                log(f"Timer now: {a_str} ({after} min)")
+                if after > (before or 0):
+                    log("SUCCESS! Timer increased without captcha!")
+                    return True
+            if r.status_code == 302:
+                log("SUCCESS (302)!")
+                return True
+            # Failed without captcha -> maybe captcha just got added, re-check next attempt
+            log("No-captcha POST did not increase timer, re-fetching page...")
+            resp = session.get(form_url, allow_redirects=True)
+            continue
+
+        # Captcha is present: solve it and POST with it.
+        log("Captcha detected, solving...")
         captcha_text = solve_captcha(session, resp.text)
         if not captcha_text:
-            return False
+            log("Captcha failed, retrying...")
+            resp = session.get(form_url, allow_redirects=True)
+            continue
 
         r = do_post(session, form_url, csrf_token, extend_till, captcha_text)
         log(f"POST (with captcha): {r.status_code}")
